@@ -1,11 +1,11 @@
 CC	= gcc
 LD	= $(CC)
 OPT 	= -O2 -s
-IPATH	= -I/home/wolf/miners/sgminer-builds/sgminer-lin64/include/
-LPATH	= -L/home/wolf/miners/sgminer-builds/sgminer-lin64/lib
-CFLAGS 	= -D_POSIX_SOURCE -D_GNU_SOURCE $(OPT) -std=c11 -pthread $(IPATH)
-LDFLAGS	= -DPTW32_STATIC_LIB $(LPATH)
-LIBS	= -ljansson -lOpenCL -pthread -ldl
+IPATH	= -I/usr/local/src/openssl-1.1.0h
+LPATH	= -L/usr/local/src/openssl-1.1.0h
+CFLAGS 	= -D_POSIX_SOURCE -D_GNU_SOURCE $(OPT) -std=c11 -pthread $(IPATH) -g
+LDFLAGS	= -DPTW32_STATIC_LIB $(LPATH) -L/usr/local/ssl/lib
+LIBS	= -ljansson -lOpenCL -pthread -ldl -lssl -lcrypto 
 
 PLAT	= X86
 OBJX86	= crypto/aesb.o crypto/aesb-x86-impl.o crypto/oaes_lib.o

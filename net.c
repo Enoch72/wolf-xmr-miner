@@ -8,6 +8,7 @@
 #include <netdb.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #else
 
@@ -86,6 +87,7 @@ int ConnectToPool(char *URL, char *Port)
 int SetNonBlockingSocket(SOCKET sockfd)
 {
 	// Set socket to non-blocking mode
+	int ret;
 	
 	#ifdef __linux__
 	
@@ -101,7 +103,7 @@ int SetNonBlockingSocket(SOCKET sockfd)
 	
 	{
 		bool keepalive = true;
-		setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&keepalive, sizeof(keepalive));
+		ret = setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&keepalive, sizeof(keepalive));
 	}
-	return(0);
+	return(ret);
 }

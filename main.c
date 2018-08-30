@@ -42,10 +42,20 @@
 #include "miner.h"
 #include "ocl.h"
 
+#include "openssl/ssl.h"
+#include "openssl/err.h"
+#include "openssl/opensslconf.h"
+
 #define STRATUM_TIMEOUT_SECONDS			120
 
 // I know, it's lazy.
-#define STRATUM_MAX_MESSAGE_LEN_BYTES	4096
+#define STRATUM_MAX_MESSAGE_LEN_BYTES	8192
+
+#ifndef OPENSSL_THREADS
+#define THISISATEST 0
+#else
+#define THISISATEST 1
+#endif
 
 typedef struct _StatusInfo
 {
@@ -80,6 +90,7 @@ typedef struct _PoolInfo
 #pragma omp atomic
 	uint32_t StratumID;
 	char XMRAuthID[64];
+	SSL *ssl;
 } PoolInfo;
 
 #pragma omp atomic
@@ -166,64 +177,250 @@ int sendit(int fd, char *buf, int len)
 	return rc < 1 ? -1 : 0;
 }
 
-#define BIG_BUF_LEN	262144
-void *DaemonUpdateThreadProc(void *Info)
-{
-	uint64_t id = 10;
-	PoolInfo *pbinfo = (PoolInfo *)Info;
-	char s[BIG_BUF_LEN];
-	void *c_ctx = cryptonight_ctx();
+SSL_CTX* InitCTX()
+{   const SSL_METHOD *method;
+    SSL_CTX *ctx;
 
-	pthread_mutex_lock(&QueueMutex);
-	for(;;)
-	{
-		pthread_cond_wait(&QueueCond, &QueueMutex);
-		for(Share *CurShare = RemoveShare(&CurrentQueue); CurShare; CurShare = RemoveShare(&CurrentQueue))
-		{
-			char ASCIINonce[9];
-			char *ptr;
-			int ret, len, hdrlen;
-
-			if (!CurShare->Job->blockblob)
-			{
-				sleep(1);
-				continue;
-			}
-			BinaryToASCIIHex(ASCIINonce, &CurShare->Nonce, 4U);
-			memcpy(CurShare->Job->blockblob+78, ASCIINonce, 8);
-
-			hdrlen = sprintf(s, "POST /json_rpc HTTP/1.0\r\nContent-Length: xxx\r\n\r\n");
-			ptr = s + hdrlen;
-
-			len = snprintf(ptr, BIG_BUF_LEN - hdrlen, "{\"method\": \"submitblock\", \"params\": "
-				"[\"%s\"]}", CurShare->Job->blockblob);
-			sprintf(ptr - 7, "%d", len);
-			ptr[-4] = '\r';
-
-			free(CurShare->Job->blockblob);
-			CurShare->Job->blockblob = NULL;
-			FreeShare(CurShare);
-
-			ret = sendit(pbinfo->sockfd, s, len + hdrlen);
-			if (ret == -1)
-				break;
-
-			pthread_mutex_lock(&StatusMutex);
-			GlobalStatus.SolvedWork++;
-			pthread_mutex_unlock(&StatusMutex);
-
-			Log(LOG_NETDEBUG, "Request: %s", s);
-		}
-	}
-	pthread_mutex_unlock(&QueueMutex);
-	// free(c_ctx);
-	return(NULL);
+    OpenSSL_add_all_algorithms();		/* Load cryptos, et.al. */
+    SSL_load_error_strings();			/* Bring in and register error messages */
+    method = SSLv23_client_method();		/* Create new client-method instance */
+    ctx = SSL_CTX_new(method);			/* Create new context */
+    if ( ctx == NULL )
+    {
+        ERR_print_errors_fp(stderr);
+        abort();
+    }
+    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
+    return ctx;
 }
+
+void print_ssl_error() {
+	unsigned long errcode;
+	char* errstring;
+	errcode = ERR_get_error();
+	errstring = ERR_error_string(errcode, errstring);
+	Log(LOG_CRITICAL, errstring);
+}
+
+int ssl_sendit(SSL *ssl, char *buf, int len, int sockfd)
+{
+
+	Log(LOG_CRITICAL, "Inside SSL Sendit");
+	Log(LOG_CRITICAL, "Sending %s", buf);
+	int rc;
+	do
+	{
+		rc = SSL_write(ssl, buf, len);
+		if (rc == -1) {
+			print_ssl_error();
+			return rc;
+		}
+		if (rc > 0) {
+			Log(LOG_CRITICAL, "SSL_sendit returned %d", rc);
+		}
+		buf += rc;
+		len -= rc;
+	} while (len > 0);
+	return rc < 1 ? -1 : 0;
+}
+
+int ssl_test(SSL *ssl, char *buf, int len, int sockfd)
+{
+	int rc;
+	do
+	{
+		rc = SSL_write(ssl, buf, len);
+		if (rc == -1) {
+			print_ssl_error();
+			return rc;
+		}
+		if (rc > 0) {
+			Log(LOG_CRITICAL, "SSL_sendit returned %d", rc);
+			return rc;
+		}
+		buf += rc;
+		len -= rc;
+	} while (len > 0);
+	return rc < 1 ? -1 : 0;
+}
+
+int read_write(SSL *ssl, int sock, char *rawresponse, size_t *PartialMessageOffset)
+{
+	//Log(LOG_CRITICAL, "Inside read_write");
+    int width;
+    int r,c2sl=0,c2s_offset=0;
+    int read_blocked_on_write=0,write_blocked_on_read=0,read_blocked=0;
+    fd_set readfds,writefds;
+    int shutdown_wait=0;
+    char c2s[STRATUM_MAX_MESSAGE_LEN_BYTES],s2c[STRATUM_MAX_MESSAGE_LEN_BYTES];
+    int ofcmode;
+    struct timeval timeout;
+
+    /*First we make the socket nonblocking*/
+    //SetNonBlockingSocket(sock);
+
+    width=sock+1;
+
+    //while(1){
+      FD_ZERO(&readfds);
+      FD_ZERO(&writefds);
+
+      FD_SET(sock,&readfds);
+
+      /* If we're waiting for a read on the socket don't
+         try to write to the server */
+      if(!write_blocked_on_read){
+        /* If we have data in the write queue don't try to
+           read from stdin */
+        if(c2sl || read_blocked_on_write)
+          FD_SET(sock,&writefds);
+        else
+          FD_SET(sock,&readfds);
+      }
+
+      timeout.tv_sec = 1;
+      timeout.tv_usec = 0;
+
+      //Log(LOG_CRITICAL, "Before read select");
+      r=select(width,&readfds,&writefds,0,&timeout);
+      //if(r==0) {
+          //Log(LOG_CRITICAL, "Select returned 0");
+          //continue;
+      //}
+      //if (r < 0) {
+    	  //Log(LOG_CRITICAL, "Select had an error");
+      //}
+      //if (r > 0) {
+          //Log(LOG_CRITICAL, "Select returned something");
+      //}
+
+
+      /* Now check if there's data to read */
+      if((FD_ISSET(sock,&readfds) && !write_blocked_on_read) ||
+        (read_blocked_on_write && FD_ISSET(sock,&writefds))){
+    	  //Log(LOG_CRITICAL, "There is data to read");
+        do {
+          read_blocked_on_write=0;
+          read_blocked=0;
+
+          //Log(LOG_CRITICAL, "Before ssl read");
+          r=SSL_read(ssl, rawresponse, STRATUM_MAX_MESSAGE_LEN_BYTES);
+
+          switch(SSL_get_error(ssl,r)){
+            case SSL_ERROR_NONE:
+            	Log(LOG_CRITICAL, "ERROR NONE ON SSL READ");
+              /* Note: this call could block, which blocks the
+                 entire application. It's arguable this is the
+                 right behavior since this is essentially a terminal
+                 client. However, in some other applications you
+                 would have to prevent this condition */
+              //fwrite(s2c,1,r,stdout);
+              return r;
+              break;
+            case SSL_ERROR_ZERO_RETURN:
+              //Log(LOG_CRITICAL, "ZERO RETURN ON SSL READ");
+              /* End of data */
+              break;
+            case SSL_ERROR_WANT_READ:
+              Log(LOG_CRITICAL, "WANT READ ON SSL READ");
+              read_blocked=1;
+              break;
+
+              /* We get a WANT_WRITE if we're
+                 trying to rehandshake and we block on
+                 a write during that rehandshake.
+                 We need to wait on the socket to be
+                 writeable but reinitiate the read
+                 when it is */
+            case SSL_ERROR_WANT_WRITE:
+              Log(LOG_CRITICAL, "WANT WRITE ON SSL READ");
+              read_blocked_on_write=1;
+              break;
+            default:
+              Log(LOG_CRITICAL, "SSL read problem");
+              print_ssl_error();
+          }
+
+          /* We need a check for read_blocked here because
+             SSL_pending() doesn't work properly during the
+             handshake. This check prevents a busy-wait
+             loop around SSL_read() */
+        } while (SSL_pending(ssl) && !read_blocked);
+      }
+
+      c2sl = STRATUM_MAX_MESSAGE_LEN_BYTES;
+
+      //Log(LOG_CRITICAL, "Before writes select");
+	  //r=select(width,NULL,&writefds,0,&timeout);
+	  //if(r==0) {
+	  	//Log(LOG_CRITICAL, "Select returned 0");
+	  	//continue;
+	  //}
+	  //if (r < 0) {
+	    //Log(LOG_CRITICAL, "Select had an error");
+	  //}
+	  //if (r > 0) {
+		//Log(LOG_CRITICAL, "Select returned something");
+	  //}
+
+      /* If the socket is writeable... */
+      //Log(LOG_CRITICAL, "Check if socket is writable");
+      if((FD_ISSET(sock,&writefds) && c2sl) ||
+        (write_blocked_on_read && FD_ISSET(sock,&readfds))) {
+        write_blocked_on_read=0;
+        /* Try to write */
+        Log(LOG_CRITICAL, "Sending %s with length %z", c2s, c2sl);
+        if (c2s[0] == '\0') {
+        	Log(LOG_CRITICAL, "It IS EMPTY");
+        }
+        r=SSL_write(ssl,c2s+c2s_offset,c2sl);
+
+        switch(SSL_get_error(ssl,r)){
+          /* We wrote something*/
+          case SSL_ERROR_NONE:
+        	  Log(LOG_CRITICAL, "ERROR NONE ON SSL WRITE");
+            c2sl-=r;
+            c2s_offset+=r;
+            break;
+
+            /* We would have blocked */
+          case SSL_ERROR_WANT_WRITE:
+        	  Log(LOG_CRITICAL, "WANT WRITE ON SSL WRITE");
+            break;
+
+            /* We get a WANT_READ if we're
+               trying to rehandshake and we block on
+               write during the current connection.
+
+               We need to wait on the socket to be readable
+               but reinitiate our write when it is */
+          case SSL_ERROR_WANT_READ:
+        	  Log(LOG_CRITICAL, "WANT READ ON SSL WRITE");
+            write_blocked_on_read=1;
+            break;
+
+              /* Some other error */
+          default:
+            Log(LOG_CRITICAL, "SSL write problem");
+            print_ssl_error();
+        }
+      }
+    //}
+
+  end:
+    //Log(LOG_CRITICAL, "read_write end");
+    //SSL_free(ssl);
+    //close(sock);
+    return -1;
+}
+
+#define BIG_BUF_LEN	262144
 
 #define JSON_BUF_LEN	345
 
 void *PoolBroadcastThreadProc(void *Info)
 {
+	Log(LOG_CRITICAL, "Inside pool broadcastthreadproc");
 	uint64_t id = 10;
 	PoolInfo *pbinfo = (PoolInfo *)Info;
 	char s[JSON_BUF_LEN];
@@ -232,9 +429,11 @@ void *PoolBroadcastThreadProc(void *Info)
 	pthread_mutex_lock(&QueueMutex);
 	for(;;)
 	{
+		Log(LOG_CRITICAL, "Inside the pool broadcast first for loop");
 		pthread_cond_wait(&QueueCond, &QueueMutex);
 		for(Share *CurShare = RemoveShare(&CurrentQueue); CurShare; CurShare = RemoveShare(&CurrentQueue))
 		{
+			Log(LOG_CRITICAL, "Inside the pool broadcast second for loop");
 			char ASCIINonce[9], ASCIIResult[65];
 			uint8_t HashResult[32];
 			int ret, len;
@@ -261,10 +460,14 @@ void *PoolBroadcastThreadProc(void *Info)
 			pthread_mutex_unlock(&StatusMutex);
 			
 			Log(LOG_NETDEBUG, "Request: %s", s);
+			Log(LOG_CRITICAL, "Request: %s", s);
 			
-			ret = sendit(pbinfo->sockfd, s, len);
-			if (ret == -1)
+			ret = ssl_sendit(pbinfo->ssl, s, len, pbinfo->sockfd);
+			if (ret == -1) {
+				Log(LOG_CRITICAL, "Unable to send share");
+				print_ssl_error();
 				break;
+			}
 			
 		}
 	}
@@ -750,226 +953,6 @@ static char getblkt[] = "POST /json_rpc HTTP/1.0\r\nContent-Length: 178\r\n\r\n"
 	"{\"method\": \"getblocktemplate\", \"params\": {\"reserve_size\": 8, \"wallet_address\": "
 	"\"9xaXMreKDK7bctpHtTE9zUUTgffkRvwZJ7UvyJGAQHkvBFqUYWwhVWWendW6NAdvtB8nn883WQxtU7cpe5eyJiUxLZ741t5\"}}";
 
-void *DaemonThreadProc(void *InfoPtr)
-{
-	PoolInfo *Pool = (PoolInfo *)InfoPtr;
-	JobInfo *NextJob;
-	char *l, *crlf;
-	int poolsocket, ret;
-	size_t PartialMessageOffset;
-	char rawresponse[BIG_BUF_LEN];
-	int len, delay = 32;
-	int rlen;
-	uint64_t height, prevheight = 0;
-	time_t job_time;
-
-	poolsocket = Pool->sockfd;
-
-	if (strlen(Pool->WorkerData.User) != WALLETLEN)
-	{
-		Log(LOG_ERROR, "Invalid username / wallet address\n");
-		return(NULL);
-	}
-	memcpy(getblkt+128, Pool->WorkerData.User, WALLETLEN);
-
-	ret = sendit(poolsocket, (char *)getblkt, sizeof(getblkt)-1);
-	if (ret == -1)
-		return(NULL);
-
-	NextJob = &Jobs[0];
-	PartialMessageOffset = 0;
-	l = NULL;
-	crlf = NULL;
-	rlen = 0;
-
-	// Listen for work until termination.
-	for(;;)
-	{
-		char *tmsg;
-		int mlen;
-
-		// receive
-		ret = recv(poolsocket, rawresponse + PartialMessageOffset, 256, 0);
-		if (ret <= 0)
-		{
-fail:
-			closesocket(poolsocket);
-			RestartMiners(Pool);
-retry:
-			poolsocket = Pool->sockfd = ConnectToPool(Pool->StrippedURL, Pool->Port);
-
-			if(poolsocket == INVALID_SOCKET)
-			{
-				Log(LOG_ERROR, "Unable to reconnect to daemon. Sleeping 10 seconds...\n");
-				sleep(10);
-				goto retry;
-			}
-
-			ret = sendit(poolsocket, (char *)getblkc, sizeof(getblkc)-1);
-			if (ret == -1)
-				return(NULL);
-
-			PartialMessageOffset = 0;
-			l = NULL;
-			crlf = NULL;
-			rlen = 0;
-			continue;
-		}
-		PartialMessageOffset += ret;
-		rawresponse[PartialMessageOffset] = 0x00;
-		if (!l)
-		{
-			l = strstr(rawresponse, "Content-Length: ");
-			if (!l)
-				continue;
-		}
-
-		if (!crlf)
-		{
-			crlf = strstr(l, "\r\n\r\n");
-			if (!crlf)
-				continue;
-		}
-
-		if (!rlen)
-		{
-			if (sscanf(l + sizeof("Content-Length:"), "%d", &rlen) != 1)
-			{
-				goto fail;
-			}
-			tmsg = crlf + 4;
-			tmsg[rlen] = 0;
-		}
-		mlen = PartialMessageOffset - (crlf - rawresponse) - 4;
-		mlen = rlen - mlen;
-		if (mlen)
-		{
-			ret = recv(poolsocket, rawresponse + PartialMessageOffset, mlen, 0);
-			if (ret <= 0)
-				goto fail;
-			PartialMessageOffset += ret;
-			if (ret < mlen)
-				continue;
-		}
-
-		// We now have a complete message
-		PartialMessageOffset = 0;
-		l = NULL;
-		crlf = NULL;
-		rlen = 0;
-
-		json_t *msg, *result, *err;
-		double TotalHashrate = 0;
-
-		Log(LOG_NETDEBUG, "Got something: %s", tmsg);
-		msg = json_loads(tmsg, 0, NULL);
-		if(!msg)
-		{
-			Log(LOG_CRITICAL, "Error parsing JSON from daemon.");
-			closesocket(poolsocket);
-			return(NULL);
-		}
-		result = json_object_get(msg, "result");
-		if (result)
-		{
-			json_t *jcount, *jheight;
-			if ((jcount = json_object_get(result, "count")))
-			{
-				height = json_integer_value(jcount);
-				// new height, get the block info
-				if (height != prevheight)
-				{
-					ret = sendit(poolsocket, getblkt, sizeof(getblkt)-1);
-					if (ret == -1)
-						return(NULL);
-					json_decref(msg);
-					continue;
-				}
-				// height is the same, wait and poll again
-			} else if ((jheight = json_object_get(result, "height")))
-			{
-				height = json_integer_value(jheight);
-				const char *tmpl = json_string_value(json_object_get(result, "blocktemplate_blob"));
-				const char *hasher = json_string_value(json_object_get(result, "blockhashing_blob"));
-				uint64_t diff = json_integer_value(json_object_get(result, "difficulty"));
-				NextJob->XMRBlobLen = strlen(hasher) / 2;
-				ASCIIHexToBinary(NextJob->XMRBlob, hasher, NextJob->XMRBlobLen * 2);
-				Log(LOG_NOTIFY, "New block at diff %lu", diff);
-				diff = 0xffffffffffffffffUL / diff;
-				NextJob->XMRTarget = diff;
-				NextJob->blockblob = strdup(tmpl);
-				CurrentJob = NextJob;
-				JobIdx++;
-				NextJob = &Jobs[JobIdx&1];
-				RestartMiners(Pool);
-				// reduce polling frequency right after
-				// a new block has been announced.
-				delay = 32;
-				prevheight = height;
-				time(&job_time);
-				job_time += 240;
-			}
-			if (jcount || jheight)
-			{
-				struct timeval timeout;
-				timeout.tv_sec = delay;
-				timeout.tv_usec = 0;
-				// reduce delay between polls
-				if (delay > 1)
-					delay >>= 1;
-				fd_set readfds;
-				FD_ZERO(&readfds);
-				FD_SET(poolsocket, &readfds);
-				ret = select(poolsocket + 1, &readfds, NULL, NULL, &timeout);
-				if(ret != 1 || !FD_ISSET(poolsocket, &readfds))
-				{
-					// reduce polling impact:
-					// getblockcount is nearly zero cost
-					// but get a new template if we've spent too long on this job
-					if (time(NULL) > job_time)
-						ret = sendit(Pool->sockfd, (char *)getblkt, sizeof(getblkt)-1);
-					else
-						ret = sendit(Pool->sockfd, (char *)getblkc, sizeof(getblkc)-1);
-					if (ret == -1)
-						return(NULL);
-				}
-				json_decref(msg);
-				continue;
-			}
-		}
-		err = json_object_get(msg, "error");
-		pthread_mutex_lock(&StatusMutex);
-
-		if(!err && !strcmp(json_string_value(json_object_get(result, "status")), "OK"))
-		{
-			Log(LOG_INFO, "Block accepted: %d/%d (%.02f%%)", GlobalStatus.SolvedWork - GlobalStatus.RejectedWork, GlobalStatus.SolvedWork, (double)(GlobalStatus.SolvedWork - GlobalStatus.RejectedWork) / GlobalStatus.SolvedWork * 100.0);
-		}
-		else
-		{
-			const char *errmsg;
-			GlobalStatus.RejectedWork++;
-			errmsg = json_string_value(json_object_get(err, "message"));
-			Log(LOG_INFO, "Block rejected (%s): %d/%d (%.02f%%)", errmsg, GlobalStatus.SolvedWork - GlobalStatus.RejectedWork, GlobalStatus.SolvedWork, (double)(GlobalStatus.SolvedWork - GlobalStatus.RejectedWork) / GlobalStatus.SolvedWork * 100.0);
-			if (!JobIdx)
-				return(NULL);
-		}
-
-		for(int i = 0; i < Pool->MinerThreadCount; ++i)
-		{
-			TotalHashrate += GlobalStatus.ThreadHashCounts[i] / GlobalStatus.ThreadTimes[i];
-		}
-
-		Log(LOG_INFO, "Total Hashrate: %.02fH/s\n", TotalHashrate);
-
-		pthread_mutex_unlock(&StatusMutex);
-
-		json_decref(msg);
-		ret = sendit(Pool->sockfd, (char *)getblkt, sizeof(getblkt)-1);
-		if (ret == -1)
-			return(NULL);
-	}
-}
-
 void *StratumThreadProc(void *InfoPtr)
 {
 	uint64_t id = 1;
@@ -982,6 +965,8 @@ void *StratumThreadProc(void *InfoPtr)
 	bool GotSubscriptionResponse = false, GotFirstJob = false;
 	char s[JSON_BUF_LEN];
 	int len;
+	SSL_CTX *ctx;
+	SSL *ssl;
 	
 	poolsocket = Pool->sockfd;
 	
@@ -992,13 +977,25 @@ void *StratumThreadProc(void *InfoPtr)
 
 	Log(LOG_NETDEBUG, "Request: %s", s);
 
-	ret = sendit(Pool->sockfd, s, len);
-	if (ret == -1)
+	/* Do SSL stuff */
+	ctx = InitCTX();
+	ssl = SSL_new(ctx);
+	SSL_set_cipher_list(ssl, "HIGH:!aNULL:!PSK:!SRP:!MD5:!RC4:!SHA1");
+	SSL_set_fd(ssl, Pool->sockfd);
+	ret = SSL_connect(ssl);
+	if (ret != 1) {
+		print_ssl_error();
+		return(0);
+	}
+	Log(LOG_CRITICAL, "Protected with encryption %s", SSL_get_cipher(ssl));
+	Pool->ssl = ssl;
+
+	ret = ssl_sendit(Pool->ssl, s, len, Pool->sockfd);
+	if (ret == -1) {
 		return(NULL);
+	}
 	
 	PartialMessageOffset = 0;
-	
-	SetNonBlockingSocket(Pool->sockfd);
 	
 	NextJob = &Jobs[0];
 
@@ -1009,50 +1006,58 @@ void *StratumThreadProc(void *InfoPtr)
 		uint32_t bufidx, MsgLen;
 		struct timeval timeout;
 		char StratumMsg[STRATUM_MAX_MESSAGE_LEN_BYTES];
+		char isOpen[JSON_BUF_LEN] = "isitopen";
 		
 		timeout.tv_sec = 480;
 		timeout.tv_usec = 0;
 		FD_ZERO(&readfds);
-		FD_SET(poolsocket, &readfds);
-		
-		ret = select(poolsocket + 1, &readfds, NULL, NULL, &timeout);
-		
-		if(ret != 1 || !FD_ISSET(poolsocket, &readfds))
-		{
-retry2:
-			Log(LOG_NOTIFY, "Stratum connection to pool timed out.");
-			closesocket(poolsocket);
-			RestartMiners(Pool);
-retry:
-			poolsocket = Pool->sockfd = ConnectToPool(Pool->StrippedURL, Pool->Port);
-			
-			// TODO/FIXME: This exit is bad and should be replaced with better flow control
-			if(poolsocket == INVALID_SOCKET)
-			{
-				Log(LOG_ERROR, "Unable to reconnect to pool. Sleeping 10 seconds...\n");
-				sleep(10);
-				goto retry;
-			}
-			
-			Log(LOG_NOTIFY, "Reconnected to pool... authenticating...");
-reauth:
-			
-			Log(LOG_NETDEBUG, "Request: %s", s);
+		FD_SET(Pool->sockfd, &readfds);
 
-			ret = sendit(Pool->sockfd, s, len);
-			if (ret == -1)
-				return(NULL);
-			
-			PartialMessageOffset = 0;
-			
-			Log(LOG_NOTIFY, "Reconnected to pool.");
-			
+		ret = read_write(ssl, Pool->sockfd, rawresponse, &PartialMessageOffset);
+		while (ret < 0) {
+			int isSocketOpen = ssl_test(Pool->ssl, isOpen, strlen(isOpen), Pool->sockfd);
+			if (isSocketOpen < 0) {
+				retry2:
+							Log(LOG_CRITICAL, "Inside retry2");
+							Log(LOG_NOTIFY, "Stratum connection to pool timed out.");
+							closesocket(poolsocket);
+							SSL_free(ssl);
+							Pool->ssl = NULL;
+
+				retry:
+							Log(LOG_CRITICAL, "Inside retry");
+							poolsocket = Pool->sockfd = ConnectToPool(Pool->StrippedURL, Pool->Port);
+							SetNonBlockingSocket(Pool->sockfd);
+							ssl = SSL_new(ctx);
+							SSL_set_cipher_list(ssl, "HIGH:!aNULL:!PSK:!SRP:!MD5:!RC4:!SHA1");
+							SSL_set_fd(ssl, Pool->sockfd);
+							SSL_connect(ssl);
+							Pool->ssl = ssl;
+							// TODO/FIXME: This exit is bad and should be replaced with better flow control
+							if(Pool->sockfd == INVALID_SOCKET)
+							{
+								Log(LOG_ERROR, "Unable to reconnect to pool. Sleeping 10 seconds...\n");
+								sleep(10);
+								goto retry;
+							}
+
+							Log(LOG_NOTIFY, "Reconnected to pool... authenticating...");
+				reauth:
+							RestartMiners(Pool);
+							Log(LOG_CRITICAL, "Inside reauth");
+							Log(LOG_NETDEBUG, "Request: %s", s);
+
+							ret = ssl_sendit(ssl, s, len, poolsocket);
+							if (ret == -1) {
+								print_ssl_error();
+							}
+
+							PartialMessageOffset = 0;
+
+							Log(LOG_NOTIFY, "Reconnected to pool.");
+							ret = read_write(ssl, Pool->sockfd, rawresponse, &PartialMessageOffset);
+			}
 		}
-		
-		// receive
-		ret = recv(poolsocket, rawresponse + PartialMessageOffset, STRATUM_MAX_MESSAGE_LEN_BYTES - PartialMessageOffset, 0);
-		if (ret <= 0)
-			goto retry2;
 		
 		rawresponse[ret] = 0x00;
 		
@@ -1060,6 +1065,7 @@ reauth:
 		
 		while(strchr(rawresponse + bufidx, '\n'))
 		{
+			Log(LOG_CRITICAL, "Inside read return");
 			json_t *msg, *msgid, *method;
 			json_error_t err;
 			
@@ -1070,6 +1076,7 @@ reauth:
 			bufidx += MsgLen;
 			
 			Log(LOG_NETDEBUG, "Got something: %s", StratumMsg);
+			Log(LOG_CRITICAL, "Got something: %s", StratumMsg);
 			msg = json_loads(StratumMsg, 0, NULL);
 			
 			if(!msg)
@@ -1246,6 +1253,7 @@ reauth:
 		}
 		memmove(rawresponse, rawresponse + bufidx, ret - bufidx);
 		PartialMessageOffset = ret - bufidx;
+		//Log(LOG_CRITICAL, "End of for loop");
 	}
 }
 
@@ -1290,7 +1298,7 @@ void *MinerThreadProc(void *Info)
 		MTInfo->AlgoCtx.InputLen = BlobLen;
 		err = XMRSetKernelArgs(&MTInfo->AlgoCtx, TmpWork, Target);
 		if(err) return(NULL);
-		sprintf(ThrID, "Thread %d, GPU ID %d, GPU Type: %s",
+		sprintf(ThrID, "Thread %d, GPU ID %zd, GPU Type: %s",
 			MTInfo->ThreadID, (uint32_t)*MTInfo->AlgoCtx.GPUIdxs, MTInfo->PlatformContext->Devices[*MTInfo->AlgoCtx.GPUIdxs].DeviceName);
 	} else {
 		ctx = cryptonight_ctx();
@@ -1421,6 +1429,7 @@ void SigHandler(int signal)
 	char c;
 	ExitFlag = true;
 	write(ExitPipe[1], &c, 1);
+	Log(LOG_CRITICAL, "Handling signal %s", c);
 }
 
 #else
@@ -1716,7 +1725,11 @@ int main(int argc, char **argv)
 		Log(LOG_CRITICAL, "Usage: %s <config file>", argv[0]);
 		return(0);
 	}
-	
+	if (THISISATEST > 0) {
+		Log(LOG_CRITICAL, "Threads are enabled");
+	} else {
+		Log(LOG_CRITICAL, "Threads are not enabled");
+	}
 	if(ParseConfigurationFile(argv[1], &Settings)) return(0);
 	
 #ifdef __aarch64__
@@ -1740,6 +1753,7 @@ int main(int argc, char **argv)
 	
 	#ifdef __linux__
 	
+	Log(LOG_CRITICAL, "At pipe");
 	pipe(ExitPipe);
 	struct sigaction ExitHandler;
 	memset(&ExitHandler, 0, sizeof(struct sigaction));
@@ -1931,26 +1945,12 @@ int main(int argc, char **argv)
 	}
 	Pool.sockfd = poolsocket;
 
-	if (daemon)
-	{
-	Log(LOG_NOTIFY, "Successfully connected to daemon.");
-
-	ret = pthread_create(&Stratum, NULL, DaemonThreadProc, (void *)&Pool);
-	if(ret)
-	{
-		printf("Failed to create Stratum thread.\n");
-		return(0);
-	}
-	} else
-	{
 	Log(LOG_NOTIFY, "Successfully connected to pool's stratum.");
-
 	ret = pthread_create(&Stratum, NULL, StratumThreadProc, (void *)&Pool);
 	if(ret)
 	{
 		printf("Failed to create Stratum thread.\n");
 		return(0);
-	}
 	}
 
 	// Wait until we've gotten work and filled
@@ -1963,16 +1963,12 @@ int main(int argc, char **argv)
 	}
 	
 	// Work is ready - time to create the broadcast and miner threads
-	if (daemon)
-	{
-	pthread_create(&BroadcastThread, NULL, DaemonUpdateThreadProc, (void *)&Pool);
-	} else
-	{
+	Log(LOG_CRITICAL, "Launching poolbroadcastthread");
 	pthread_create(&BroadcastThread, NULL, PoolBroadcastThreadProc, (void *)&Pool);
-	}
 	
 	for(int i = 0; i < Settings.TotalThreads; ++i)
 	{
+		Log(LOG_CRITICAL, "Created miner thread");
 		ret = pthread_create(MinerWorker + i, NULL, MinerThreadProc, MThrInfo + i);
 		
 		if(ret)
@@ -2007,6 +2003,7 @@ int main(int argc, char **argv)
 	
 	char c;  
 	read(ExitPipe[0], &c, 1);
+	Log(LOG_CRITICAL, "Read %s", c);
 	
 	pthread_join(Stratum, NULL);
 	
@@ -2028,6 +2025,7 @@ int main(int argc, char **argv)
 	
 	//pthread_cancel(BroadcastThread);
 	
+	Log(LOG_CRITICAL, "Before shutdown");
 	closesocket(poolsocket);
 	
 	NetworkingShutdown();
@@ -2036,4 +2034,3 @@ int main(int argc, char **argv)
 	
 	return(0);
 }
-
