@@ -1,3 +1,4 @@
+#include "stdafx.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -7,7 +8,7 @@
 
 // Parameter len is bytes in rawstr, therefore, asciistr must have
 // at least (len << 1) + 1 bytes allocated, the last for the NULL
-void BinaryToASCIIHex(char *restrict asciistr, const void *restrict rawstr, size_t len)
+void BinaryToASCIIHex(char * asciistr, const void * rawstr, size_t len)
 {
 	for(int i = 0, j = 0; i < len; ++i)
 	{
@@ -22,7 +23,7 @@ void BinaryToASCIIHex(char *restrict asciistr, const void *restrict rawstr, size
 // must have (len >> 1) bytes allocated
 // Maybe asciistr just NULL terminated?
 // Returns length of rawstr in bytes
-int ASCIIHexToBinary(void *restrict rawstr, const char *restrict asciistr, size_t len)
+int ASCIIHexToBinary(void * rawstr, const char * asciistr, size_t len)
 {
 	for(int i = 0, j = 0; i < len; ++i)
 	{
@@ -38,12 +39,17 @@ int ASCIIHexToBinary(void *restrict rawstr, const char *restrict asciistr, size_
 	return(len >> 1);
 }
 
-uint32_t BSWAP32(uint32_t data)
+uint32_t BSWAP32(uint32_t x)
 {
 	#ifdef __GNUC__
-	return(__builtin_bswap32(data));
+	return(__builtin_bswap32(x));
 	#else
-	#error "Unsupported compiler."
+	return _byteswap_ulong(x);
+		/*
+		((x << 24) & 0xff000000) |
+		((x << 8) & 0x00ff0000) |
+		((x >> 8) & 0x0000ff00) |
+		((x >> 24) & 0x000000ff); */
 	#endif
 }
 
@@ -135,6 +141,8 @@ double SecondsElapsed(TIME_TYPE Start, TIME_TYPE End)
 	return((double)(End - Start) / CLOCKS_PER_SEC);
 }
 
+
+
 #endif
 
 #ifdef __linux__
@@ -148,3 +156,33 @@ void Sleep(uint32_t ms)
 }
 
 #endif
+
+#include "synchapi.h"
+void sleep(uint32_t ms)
+{
+	Sleep(ms);
+};
+
+bool  atomic_load(bool *ptr)
+{
+	return *ptr;
+};
+
+void  atomic_store(bool *ptr, bool val)
+{
+	*ptr = val;
+};
+
+int32_t strcasecmp(char *s1, char *s2)
+{
+	while (*s1 && *s2)
+	{
+		if (toupper(*s1) == toupper(*s2))
+		{
+			s1++; s2++;
+		}
+		else
+			break;
+	}
+	return (s1[0]-s2[0]);
+};

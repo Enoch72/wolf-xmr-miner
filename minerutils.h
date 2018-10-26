@@ -11,8 +11,8 @@ uint32_t BSWAP32(uint32_t data);
 void SwapBuffer32(void *data, int chunks);
 
 // ASCII <-> binary conversion routines
-int ASCIIHexToBinary(void *restrict rawstr, const char *restrict asciistr, size_t len);
-void BinaryToASCIIHex(char *restrict asciistr, const void *restrict rawstr, size_t len);
+int ASCIIHexToBinary(void * rawstr, const char * asciistr, size_t len);
+void BinaryToASCIIHex(char * asciistr, const void * rawstr, size_t len);
 
 // File reading routine
 size_t LoadTextFile(char **Output, char *Filename);
@@ -36,4 +36,10 @@ bool FullTest(const uint32_t *Hash, const uint32_t *FullTarget);
 TIME_TYPE MinerGetCurTime(void);
 double SecondsElapsed(TIME_TYPE Start, TIME_TYPE End);
 
+
+void sleep(uint32_t ms);
+bool  atomic_load(bool *ptr);
+void  atomic_store(bool *ptr, bool val);
+int32_t strcasecmp( char *s1,  char *v2);
+extern uint32_t BSWAP32(uint32_t x);
 #endif

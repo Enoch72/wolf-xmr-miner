@@ -8,11 +8,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
-#include <sys/param.h>
-#include <endian.h>
+//#include <sys/param.h>
+//#include <endian.h>
+
+
 
 #if defined(_MSC_VER)
 #include <stdlib.h>
+
+#define LITTLE_ENDIAN 1
+#define BIG_ENDIAN 0
+#define BYTE_ORDER LITTLE_ENDIAN
 
 static inline uint32_t rol32(uint32_t x, int r) {
   static_assert(sizeof(uint32_t) == sizeof(unsigned int), "this code assumes 32-bit integers");
@@ -140,7 +146,8 @@ static inline void memcpy_swap64(void *dst, const void *src, size_t n) {
 }
 
 #if !defined(BYTE_ORDER) || !defined(LITTLE_ENDIAN) || !defined(BIG_ENDIAN)
-static_assert(false, "BYTE_ORDER is undefined. Perhaps, GNU extensions are not enabled");
+//static_assert(false, "BYTE_ORDER is undefined. Perhaps, GNU extensions are not enabled");
+#pragma warning (error: 100)
 #endif
 
 #if BYTE_ORDER == LITTLE_ENDIAN

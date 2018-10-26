@@ -6,8 +6,8 @@
 
 // Returns buffer that must be freed in RawCoinbase, and
 // length of said buffer as the return value
-void CreateRawCoinbaseHash(	uint8_t *restrict RawCoinbaseHash, const uint8_t *restrict Coinbase1, const uint8_t *restrict Coinbase2, const uint8_t *restrict Extranonce1,
-							const uint8_t *restrict Extranonce2, const uint8_t ENonce2Len)
+void CreateRawCoinbaseHash(	uint8_t * RawCoinbaseHash, const uint8_t * Coinbase1, const uint8_t * Coinbase2, const uint8_t * Extranonce1,
+							const uint8_t * Extranonce2, const uint8_t ENonce2Len)
 {
 	uint32_t Length = 0;
 	uint8_t *RawCoinbase = (uint8_t *)malloc(sizeof(uint8_t) * ((strlen(Coinbase1) + strlen(Coinbase2) + strlen(Extranonce1) + (ENonce2Len << 1)) >> 1));

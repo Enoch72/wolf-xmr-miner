@@ -1,13 +1,18 @@
+#include "stdafx.h"
+
+#include "intrin.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <signal.h>
 #include <pthread.h>
-#include <stdbool.h>
 #include <jansson.h>
-#include <stdatomic.h>
+//#include <atomic.h>
+// Link with ws2_32.lib
+#pragma comment(lib, "Ws2_32.lib")
+
 #ifdef __x86_64__
-#include <cpuid.h>
+//#include <cpuid.h>
 #endif
 
 #ifdef __linux__
@@ -71,11 +76,14 @@ typedef struct _PoolInfo
 	WorkerInfo WorkerData;
 	uint32_t MinerThreadCount;
 	uint32_t *MinerThreads;
-	atomic_uint StratumID;
+	//atomic_uint StratumID;
+#pragma omp atomic
+	uint32_t StratumID;
 	char XMRAuthID[64];
 } PoolInfo;
 
-atomic_bool *RestartMining;
+#pragma omp atomic
+bool *RestartMining;
 
 bool ExitFlag = false;
 int ExitPipe[2];
@@ -108,7 +116,7 @@ Share *GetShare()
 		ret = ShareList;
 		ShareList = ret->next;
 	} else {
-		ret = malloc(sizeof(Share));
+		ret = (Share *)malloc(sizeof(Share));
 	}
 	return ret;
 }
@@ -236,7 +244,7 @@ void *PoolBroadcastThreadProc(void *Info)
 			if (!CurShare->Gothash) {
 				((uint32_t *)(CurShare->Job->XMRBlob + 39))[0] = CurShare->Nonce;
 				int variant = ((uint8_t*)CurShare->Job->XMRBlob)[0] >= 7 ? ((uint8_t*)CurShare->Job->XMRBlob)[0] - 6 : 0;
-				cryptonight_hash_ctx(HashResult, CurShare->Job->XMRBlob, CurShare->Job->XMRBlobLen, c_ctx, variant);
+				cryptonight_hash_ctx(HashResult, CurShare->Job->XMRBlob, CurShare->Job->XMRBlobLen, cryptonight_ctx() /*c_ctx*/, variant);
 				BinaryToASCIIHex(ASCIIResult, HashResult, 32);
 			} else {
 				BinaryToASCIIHex(ASCIIResult, CurShare->Blob, 32);
@@ -273,9 +281,10 @@ int32_t XMRSetKernelArgs(AlgoContext *HashData, void *HashInput, uint64_t Target
 	
 	if(!HashData || !HashInput || HashData->InputLen < 1) return(ERR_STUPID_PARAMS);
 	const uint8_t version = ((const uint8_t*)HashInput)[0];
-	const int variant = version >= 7 ? version - 6 : 0;
+	 int variant = version >= 7 ? version - 6 : 0;
+	variant = 1;
 	retval = clEnqueueWriteBuffer(*HashData->CommandQueues, HashData->InputBuffer, CL_TRUE, 0, HashData->InputLen, HashInput, 0, NULL, NULL);
-	fprintf(stderr, "LOOK HERE %i", variant);
+	fprintf(stderr, "VARIANT %i", variant);
 	if(retval != CL_SUCCESS)
 	{
 		Log(LOG_CRITICAL, "Error %d when calling clEnqueueWriteBuffer to fill input buffer.", retval);
@@ -490,7 +499,7 @@ int32_t RunXMRTest(AlgoContext *HashData, void *HashOutput)
 	return(ERR_SUCCESS);
 }
 
-int32_t XMRCleanup(AlgoContext *HashData)
+void XMRCleanup(AlgoContext *HashData)
 {
 	//for(int i = 0; i < 5; ++i) clReleaseKernel(HashData->Kernels[i]);
 	for(int i = 0; i < 7; ++i) clReleaseKernel(HashData->Kernels[i]);
@@ -632,7 +641,7 @@ int32_t SetupXMRTest(AlgoContext *HashData, OCLPlatform *OCL, uint32_t DeviceIdx
 	
 	Options = (char *)malloc(sizeof(char) * 32);
 	
-	snprintf(Options, 31, "-I. -DWORKSIZE=%d", LocalThreads);
+	snprintf(Options, 31, "-I. -DWORKSIZE=%d", (uint32_t)LocalThreads);
 	
 	retval = clBuildProgram(HashData->Program, 1, &OCL->Devices[DeviceIdx].DeviceID, Options, NULL, NULL);
 	
@@ -1117,6 +1126,7 @@ reauth:
 						GlobalStatus.RejectedWork++;
 						errmsg = json_string_value(json_object_get(err, "message"));
 						Log(LOG_INFO, "Share rejected (%s): %d/%d (%.02f%%)", errmsg, GlobalStatus.SolvedWork - GlobalStatus.RejectedWork, GlobalStatus.SolvedWork, (double)(GlobalStatus.SolvedWork - GlobalStatus.RejectedWork) / GlobalStatus.SolvedWork * 100.0);
+						
 						if (!strcasecmp("Unauthenticated", errmsg)) {
 							RestartMiners(Pool);
 							pthread_mutex_unlock(&StatusMutex);
@@ -1165,7 +1175,7 @@ reauth:
 					NextJob->XMRBlobLen = strlen(val) / 2;
 					ASCIIHexToBinary(NextJob->XMRBlob, val, NextJob->XMRBlobLen * 2);
 					strcpy(NextJob->ID, json_string_value(jid));
-					NextJob->XMRTarget = __builtin_bswap32(strtoul(json_string_value(target), NULL, 16));
+					NextJob->XMRTarget = BSWAP32(strtoul(json_string_value(target), NULL, 16));
 					CurrentJob = NextJob;
 					JobIdx++;
 					NextJob = &Jobs[JobIdx&1];
@@ -1214,7 +1224,7 @@ reauth:
 					NextJob->XMRBlobLen = strlen(val) / 2;
 					ASCIIHexToBinary(NextJob->XMRBlob, val, NextJob->XMRBlobLen * 2);
 					strcpy(NextJob->ID, json_string_value(jid));
-					NextJob->XMRTarget = __builtin_bswap32(strtoul(json_string_value(target), NULL, 16));
+					NextJob->XMRTarget = BSWAP32(strtoul(json_string_value(target), NULL, 16));
 					CurrentJob = NextJob;
 					JobIdx++;
 					NextJob = &Jobs[JobIdx&1];
@@ -1281,7 +1291,7 @@ void *MinerThreadProc(void *Info)
 		err = XMRSetKernelArgs(&MTInfo->AlgoCtx, TmpWork, Target);
 		if(err) return(NULL);
 		sprintf(ThrID, "Thread %d, GPU ID %d, GPU Type: %s",
-			MTInfo->ThreadID, *MTInfo->AlgoCtx.GPUIdxs, MTInfo->PlatformContext->Devices[*MTInfo->AlgoCtx.GPUIdxs].DeviceName);
+			MTInfo->ThreadID, (uint32_t)*MTInfo->AlgoCtx.GPUIdxs, MTInfo->PlatformContext->Devices[*MTInfo->AlgoCtx.GPUIdxs].DeviceName);
 	} else {
 		ctx = cryptonight_ctx();
 		*nonceptr = StartNonce;
@@ -1354,7 +1364,7 @@ void *MinerThreadProc(void *Info)
 		} else {
 			const uint32_t first_nonce = *nonceptr;
 			uint32_t n = first_nonce - 1;
-			uint64_t hash[32/8] __attribute__((aligned(64)));
+			uint64_t hash[32/8] /*__attribute__((aligned(64)))*/;
 			int found = 0;
 			int variant = ((uint8_t*)TmpWork)[0] >= 7 ? ((uint8_t*)TmpWork)[0] - 6 : 0;
 again:
@@ -1712,11 +1722,13 @@ int main(int argc, char **argv)
 #ifdef __aarch64__
 	cryptonight_hash_ctx = cryptonight_hash_aesni;
 #else
+	
+	/*
 	if (__get_cpuid_max(0, &tmp1) >= 1) {
 		__get_cpuid(1, &tmp1, &tmp2, &tmp3, &tmp4);
 		if (tmp3 & 0x2000000)
 			use_aesni = 1;
-	}
+	}*/
 	if (use_aesni)
 		cryptonight_hash_ctx = cryptonight_hash_aesni;
 	else
@@ -1742,7 +1754,7 @@ int main(int argc, char **argv)
 	
 	#endif
 	
-	RestartMining = (atomic_bool *)malloc(sizeof(atomic_bool) * Settings.TotalThreads);
+	RestartMining = (bool *)malloc(sizeof(bool) * Settings.TotalThreads);
 	
 	char *TmpPort;
 	uint32_t URLOffset;
@@ -1858,7 +1870,7 @@ int main(int argc, char **argv)
 	Log(LOG_INFO, "Sleeping for 10s to allow fan to spin up/down...");
 	sleep(10);*/
 	
-	for(int i = 0; i < Settings.TotalThreads; ++i) atomic_init(RestartMining + i, false);
+	for(int i = 0; i < Settings.TotalThreads; ++i) atomic_store(RestartMining + i, false);
 	
 	Log(LOG_NOTIFY, "Setting up GPU(s).");
 
@@ -1993,13 +2005,13 @@ int main(int argc, char **argv)
 	
 	//pthread_create(&ADLThread, NULL, ADLInfoGatherThreadProc, NULL);
 	
-	char c;
+	char c;  
 	read(ExitPipe[0], &c, 1);
 	
-	//pthread_join(Stratum, NULL);
+	pthread_join(Stratum, NULL);
 	
-	//pthread_cancel(Stratum);
-	//pthread_cancel(ADLThread);
+	pthread_cancel(Stratum);
+	pthread_cancel(ADLThread);
 	
 #ifndef __ANDROID__
 	for(int i = 0; i < Settings.TotalThreads; ++i) pthread_cancel(MinerWorker[i]);

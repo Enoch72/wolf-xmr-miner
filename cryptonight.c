@@ -6,9 +6,12 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
+#include <intrin.h>
+#include <mmintrin.h>
+
 #ifdef __linux__
 #include <sys/mman.h>
+#include <unistd.h>
 #endif
 #include "crypto/oaes_lib.h"
 #include "crypto/c_keccak.h"
@@ -67,6 +70,7 @@ typedef __uint128_t uint128_t;
   const uint64_t tweak1_2 = variant > 0 ? *(const uint64_t*)(((const uint8_t*)input)+35) ^ ctx->state.hs.w[24] : 0
 
 #pragma pack(push, 1)
+
 union cn_slow_hash_state {
 	union hash_state hs;
 	struct {
@@ -77,20 +81,20 @@ union cn_slow_hash_state {
 #pragma pack(pop)
 
 static void do_blake_hash(const void* input, size_t len, char* output) {
-	blake256_hash((uint8_t*)output, input, len);
+	blake256_hash((uint8_t*)output, (const uint8_t *)input, len);
 }
 
 void do_groestl_hash(const void* input, size_t len, char* output) {
-	groestl(input, len * 8, (uint8_t*)output);
+	groestl((const BitSequence *)input, len * 8, (uint8_t*)output);
 }
 
 static void do_jh_hash(const void* input, size_t len, char* output) {
-	int r = jh_hash(HASH_SIZE * 8, input, 8 * len, (uint8_t*)output);
+	int r = jh_hash(HASH_SIZE * 8, (const BitSequence *)input, 8 * len, (uint8_t*)output);
 	assert((SUCCESS == r));
 }
 
 static void do_skein_hash(const void* input, size_t len, char* output) {
-	int r = skein_hash(8 * HASH_SIZE, input, 8 * len, (uint8_t*)output);
+	int r = skein_hash(8 * HASH_SIZE, (const SkeinBitSequence *)input, 8 * len, (uint8_t*)output);
 	assert((SKEIN_SUCCESS == r));
 }
 
@@ -114,7 +118,7 @@ static inline void mul_sum_xor_dst(const uint8_t* a, uint8_t* c, uint8_t* dst) {
 	"=a" (lo), "=d" (hi):
 	"a" (*(uint64_t *)a), "d" (*(uint64_t *)dst));
 #else
-	lo = mul128(((uint64_t*) a)[0], ((uint64_t*) dst)[0], &hi);
+	lo = _mul128(((uint64_t*) a)[0], ((uint64_t*) dst)[0], &hi);
 #endif
 	lo += ((uint64_t*) c)[1];
 	hi += ((uint64_t*) c)[0];
@@ -144,23 +148,24 @@ static inline void xor_blocks_dst(const uint8_t* a, const uint8_t* b, uint8_t* d
 }
 #endif /* __x86_64__ */
 
+
 struct cryptonight_ctx {
-	uint8_t long_state[MEMORY] __attribute((aligned(16)));
+	__declspec(align(16)) uint8_t long_state[MEMORY];
 	union cn_slow_hash_state state;
-	uint8_t text[INIT_SIZE_BYTE] __attribute((aligned(16)));
-	uint8_t a[AES_BLOCK_SIZE] __attribute__((aligned(16)));
-	uint8_t b[AES_BLOCK_SIZE] __attribute__((aligned(16)));
-	uint8_t c[AES_BLOCK_SIZE] __attribute__((aligned(16)));
+	__declspec(align(16)) uint8_t text[INIT_SIZE_BYTE] ;
+	__declspec(align(16)) uint8_t a[AES_BLOCK_SIZE] ;
+	__declspec(align(16)) uint8_t b[AES_BLOCK_SIZE] ;
+	__declspec(align(16)) uint8_t c[AES_BLOCK_SIZE] ;
 	oaes_ctx* aes_ctx;
 };
 
 struct cryptonight_aesni_ctx {
-    uint8_t long_state[MEMORY] __attribute((aligned(16)));
+	__declspec(align(16)) uint8_t long_state[MEMORY];
     union cn_slow_hash_state state;
-    uint8_t text[INIT_SIZE_BYTE] __attribute((aligned(16)));
-    uint64_t a[AES_BLOCK_SIZE >> 3] __attribute__((aligned(16)));
-    uint64_t b[AES_BLOCK_SIZE >> 3] __attribute__((aligned(16)));
-    uint8_t c[AES_BLOCK_SIZE] __attribute__((aligned(16)));
+	__declspec(align(16)) uint8_t text[INIT_SIZE_BYTE];
+	__declspec(align(16)) uint64_t a[AES_BLOCK_SIZE >> 3];
+	__declspec(align(16)) uint64_t b[AES_BLOCK_SIZE >> 3];
+	__declspec(align(16)) uint8_t c[AES_BLOCK_SIZE];
     oaes_ctx* aes_ctx;
 };
 
@@ -244,7 +249,7 @@ void cryptonight_hash_dumb(void* output, const void* input, const uint32_t inlen
 
 #ifdef __x86_64__
 
-#include <x86intrin.h>
+#include <intrin.h>
 
 static inline void ExpandAESKey256_sub1(__m128i *tmp1, __m128i *tmp2)
 {
@@ -326,7 +331,7 @@ static inline void ExpandAESKey256(char *keybuf)
 	keys[14] = tmp1;
 }
 
-void cryptonight_hash_aesni(void *restrict output, const void *restrict input, const uint32_t inlen, struct cryptonight_ctx *restrict ct0, int variant)
+void cryptonight_hash_aesni(void * output, const void * input, const uint32_t inlen, struct cryptonight_ctx * ct0, int variant)
 {
     struct cryptonight_aesni_ctx *ctx = (struct cryptonight_aesni_ctx *)ct0;
     uint8_t ExpandedKey[256];
@@ -377,11 +382,11 @@ void cryptonight_hash_aesni(void *restrict output, const void *restrict input, c
     }
 
 	__m128i b_x = _mm_load_si128((__m128i *)ctx->b);
-    uint64_t a[2] __attribute((aligned(16))), b[2] __attribute((aligned(16)));
+    uint64_t a[2] , b[2];
     a[0] = ctx->a[0];
     a[1] = ctx->a[1];
 
-	for(i = 0; __builtin_expect(i < 0x80000, 1); i++)
+	for(i = 0; (i < 0x80000, 1); i++)
 	{
 	__m128i c_x = _mm_load_si128((__m128i *)&ctx->long_state[a[0] & 0x1FFFF0]);
 	__m128i a_x = _mm_load_si128((__m128i *)a);
@@ -389,7 +394,7 @@ void cryptonight_hash_aesni(void *restrict output, const void *restrict input, c
 	c_x = _mm_aesenc_si128(c_x, a_x);
 
 	_mm_store_si128((__m128i *)c, c_x);
-	__builtin_prefetch(&ctx->long_state[c[0] & 0x1FFFF0], 0, 1);
+	_mm_prefetch(&ctx->long_state[c[0] & 0x1FFFF0], _MM_HINT_NTA);
 
 	b_x = _mm_xor_si128(b_x, c_x);
 	_mm_store_si128((__m128i *)&ctx->long_state[a[0] & 0x1FFFF0], b_x);
@@ -403,14 +408,15 @@ void cryptonight_hash_aesni(void *restrict output, const void *restrict input, c
 	{
 	  uint64_t hi, lo;
 	 // hi,lo = 64bit x 64bit multiply of c[0] and b[0]
-
-	  __asm__("mulq %3\n\t"
+	  /*
+	  __asm("mulq %3\n\t"
 		  : "=d" (hi),
 		"=a" (lo)
 		  : "%a" (c[0]),
 		"rm" (b[0])
 		  : "cc" );
-
+		  */
+	  lo = _mul128(c[0], b[0], &hi);
 	  a[0] += hi;
 	  a[1] += lo;
 	}
@@ -423,7 +429,7 @@ void cryptonight_hash_aesni(void *restrict output, const void *restrict input, c
 	a[0] ^= b[0];
 	a[1] ^= b[1];
 	b_x = c_x;
-	__builtin_prefetch(&ctx->long_state[a[0] & 0x1FFFF0], 0, 3);
+	_mm_prefetch(&ctx->long_state[a[0] & 0x1FFFF0], _MM_HINT_NTA);
 	}
 
     memcpy(ctx->text, ctx->state.init, INIT_SIZE_BYTE);
@@ -433,7 +439,7 @@ void cryptonight_hash_aesni(void *restrict output, const void *restrict input, c
     //for (i = 0; likely(i < MEMORY); i += INIT_SIZE_BYTE)
     //    aesni_parallel_xor(&ctx->text, ExpandedKey, &ctx->long_state[i]);
 
-    for (i = 0; __builtin_expect(i < MEMORY, 1); i += INIT_SIZE_BYTE)
+    for (i = 0; (i < MEMORY, 1); i += INIT_SIZE_BYTE)
 	{
 		xmminput[0] = _mm_xor_si128(longoutput[(i >> 4)], xmminput[0]);
 		xmminput[1] = _mm_xor_si128(longoutput[(i >> 4) + 1], xmminput[1]);

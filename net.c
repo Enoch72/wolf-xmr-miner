@@ -1,3 +1,4 @@
+#include "stdafx.h"
 #include <string.h>
 
 #ifdef __linux__
@@ -99,8 +100,8 @@ int SetNonBlockingSocket(SOCKET sockfd)
 	#endif
 	
 	{
-		int keepalive = 1;
-		setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
+		bool keepalive = true;
+		setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&keepalive, sizeof(keepalive));
 	}
 	return(0);
 }

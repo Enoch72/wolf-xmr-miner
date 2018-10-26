@@ -47,7 +47,7 @@ static const char _NR[] = {
 #include <process.h>
 #else
 #include <sys/types.h>
-#include <unistd.h>
+//#include <unistd.h>
 #endif
 
 #include "oaes_config.h"
