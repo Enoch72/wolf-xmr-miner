@@ -1,0 +1,7 @@
+﻿  main.c
+d:\miners\wolf-xmr-miner\main.c(1143): warning C4090: 'funzione': qualificatori 'const' differenti
+d:\miners\wolf-xmr-miner\main.c(1307): warning C4477: 'sprintf': con la stringa di formato '%zd' è necessario un argomento di tipo 'unsigned __int64', ma il tipo dell'argomento variadic 2 è 'uint32_t'
+  d:\miners\wolf-xmr-miner\main.c(1307): note: provare a usare '%d' nella stringa di formato
+  d:\miners\wolf-xmr-miner\main.c(1307): note: provare a usare '%I32d' nella stringa di formato
+d:\miners\wolf-xmr-miner\main.c(2017): warning C4700: utilizzata variabile locale 'ADLThread' non inizializzata
+  Mad_XMR_Miner.vcxproj -> D:\Miners\wolf-xmr-miner\Wolf_XMR_Miner\x64\Debug\Mad_XMR_Miner.exe

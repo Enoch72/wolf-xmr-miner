@@ -10,6 +10,7 @@
 //#include <atomic.h>
 // Link with ws2_32.lib
 #pragma comment(lib, "Ws2_32.lib")
+#pragma comment(lib, "CRYPT32.LIB")
 
 #ifdef __x86_64__
 //#include <cpuid.h>
@@ -180,7 +181,7 @@ int sendit(int fd, char *buf, int len)
 SSL_CTX* InitCTX()
 {   const SSL_METHOD *method;
     SSL_CTX *ctx;
-
+	SSL_library_init();
     OpenSSL_add_all_algorithms();		/* Load cryptos, et.al. */
     SSL_load_error_strings();			/* Bring in and register error messages */
     method = SSLv23_client_method();		/* Create new client-method instance */
@@ -191,22 +192,20 @@ SSL_CTX* InitCTX()
         abort();
     }
     SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
+	SSL_CTX_set_mode(ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     return ctx;
 }
 
 void print_ssl_error() {
 	unsigned long errcode;
-	char* errstring;
+	char errstring[256];
 	errcode = ERR_get_error();
-	errstring = ERR_error_string(errcode, errstring);
+	ERR_error_string(errcode, errstring);
 	Log(LOG_CRITICAL, errstring);
 }
 
 int ssl_sendit(SSL *ssl, char *buf, int len, int sockfd)
 {
-
-	Log(LOG_CRITICAL, "Inside SSL Sendit");
-	Log(LOG_CRITICAL, "Sending %s", buf);
 	int rc;
 	do
 	{
@@ -214,9 +213,6 @@ int ssl_sendit(SSL *ssl, char *buf, int len, int sockfd)
 		if (rc == -1) {
 			print_ssl_error();
 			return rc;
-		}
-		if (rc > 0) {
-			Log(LOG_CRITICAL, "SSL_sendit returned %d", rc);
 		}
 		buf += rc;
 		len -= rc;
@@ -226,6 +222,8 @@ int ssl_sendit(SSL *ssl, char *buf, int len, int sockfd)
 
 int ssl_test(SSL *ssl, char *buf, int len, int sockfd)
 {
+	return ssl_sendit(ssl, buf, len, sockfd);
+	/*
 	int rc;
 	do
 	{
@@ -234,14 +232,15 @@ int ssl_test(SSL *ssl, char *buf, int len, int sockfd)
 			print_ssl_error();
 			return rc;
 		}
-		if (rc > 0) {
-			Log(LOG_CRITICAL, "SSL_sendit returned %d", rc);
-			return rc;
-		}
+	//	if (rc > 0) {
+	//		Log(LOG_CRITICAL, "SSL_sendit returned %d", rc);
+	//		return rc;
+	//	}
 		buf += rc;
 		len -= rc;
 	} while (len > 0);
 	return rc < 1 ? -1 : 0;
+	*/
 }
 
 int read_write(SSL *ssl, int sock, char *rawresponse, size_t *PartialMessageOffset)
@@ -282,7 +281,8 @@ int read_write(SSL *ssl, int sock, char *rawresponse, size_t *PartialMessageOffs
       timeout.tv_usec = 0;
 
       //Log(LOG_CRITICAL, "Before read select");
-      r=select(width,&readfds,&writefds,0,&timeout);
+
+   //   r=select(width,&readfds,&writefds,0,&timeout);
       //if(r==0) {
           //Log(LOG_CRITICAL, "Select returned 0");
           //continue;
@@ -295,6 +295,7 @@ int read_write(SSL *ssl, int sock, char *rawresponse, size_t *PartialMessageOffs
       //}
 
 
+	  r = SSL_pending(ssl);
       /* Now check if there's data to read */
       if((FD_ISSET(sock,&readfds) && !write_blocked_on_read) ||
         (read_blocked_on_write && FD_ISSET(sock,&writefds))){
@@ -308,7 +309,7 @@ int read_write(SSL *ssl, int sock, char *rawresponse, size_t *PartialMessageOffs
 
           switch(SSL_get_error(ssl,r)){
             case SSL_ERROR_NONE:
-            	Log(LOG_CRITICAL, "ERROR NONE ON SSL READ");
+          //  	Log(LOG_CRITICAL, "ERROR NONE ON SSL READ");
               /* Note: this call could block, which blocks the
                  entire application. It's arguable this is the
                  right behavior since this is essentially a terminal
@@ -485,9 +486,9 @@ int32_t XMRSetKernelArgs(AlgoContext *HashData, void *HashInput, uint64_t Target
 	if(!HashData || !HashInput || HashData->InputLen < 1) return(ERR_STUPID_PARAMS);
 	const uint8_t version = ((const uint8_t*)HashInput)[0];
 	 int variant = version >= 7 ? version - 6 : 0;
-	variant = 1;
+	
 	retval = clEnqueueWriteBuffer(*HashData->CommandQueues, HashData->InputBuffer, CL_TRUE, 0, HashData->InputLen, HashInput, 0, NULL, NULL);
-	fprintf(stderr, "VARIANT %i", variant);
+	fprintf(stderr, "VARIANT, VER %i, %i", variant, version);
 	if(retval != CL_SUCCESS)
 	{
 		Log(LOG_CRITICAL, "Error %d when calling clEnqueueWriteBuffer to fill input buffer.", retval);
@@ -982,11 +983,15 @@ void *StratumThreadProc(void *InfoPtr)
 	ssl = SSL_new(ctx);
 	SSL_set_cipher_list(ssl, "HIGH:!aNULL:!PSK:!SRP:!MD5:!RC4:!SHA1");
 	SSL_set_fd(ssl, Pool->sockfd);
+	SSL_set_connect_state(ssl);
 	ret = SSL_connect(ssl);
 	if (ret != 1) {
 		print_ssl_error();
 		return(0);
 	}
+
+	uint32_t hs = SSL_do_handshake(ssl);
+
 	Log(LOG_CRITICAL, "Protected with encryption %s", SSL_get_cipher(ssl));
 	Pool->ssl = ssl;
 
@@ -1015,6 +1020,7 @@ void *StratumThreadProc(void *InfoPtr)
 
 		ret = read_write(ssl, Pool->sockfd, rawresponse, &PartialMessageOffset);
 		while (ret < 0) {
+			uint32_t hs = SSL_do_handshake(Pool->ssl);
 			int isSocketOpen = ssl_test(Pool->ssl, isOpen, strlen(isOpen), Pool->sockfd);
 			if (isSocketOpen < 0) {
 				retry2:
@@ -1027,7 +1033,7 @@ void *StratumThreadProc(void *InfoPtr)
 				retry:
 							Log(LOG_CRITICAL, "Inside retry");
 							poolsocket = Pool->sockfd = ConnectToPool(Pool->StrippedURL, Pool->Port);
-							SetNonBlockingSocket(Pool->sockfd);
+							//SetNonBlockingSocket(Pool->sockfd);
 							ssl = SSL_new(ctx);
 							SSL_set_cipher_list(ssl, "HIGH:!aNULL:!PSK:!SRP:!MD5:!RC4:!SHA1");
 							SSL_set_fd(ssl, Pool->sockfd);
@@ -1037,7 +1043,7 @@ void *StratumThreadProc(void *InfoPtr)
 							if(Pool->sockfd == INVALID_SOCKET)
 							{
 								Log(LOG_ERROR, "Unable to reconnect to pool. Sleeping 10 seconds...\n");
-								sleep(10);
+								sleep(1000);
 								goto retry;
 							}
 
@@ -1065,7 +1071,7 @@ void *StratumThreadProc(void *InfoPtr)
 		
 		while(strchr(rawresponse + bufidx, '\n'))
 		{
-			Log(LOG_CRITICAL, "Inside read return");
+		//	Log(LOG_CRITICAL, "Inside read return");
 			json_t *msg, *msgid, *method;
 			json_error_t err;
 			
@@ -1372,7 +1378,7 @@ void *MinerThreadProc(void *Info)
 		} else {
 			const uint32_t first_nonce = *nonceptr;
 			uint32_t n = first_nonce - 1;
-			uint64_t hash[32/8] /*__attribute__((aligned(64)))*/;
+			__declspec(align(64)) uint64_t hash[32/8];
 			int found = 0;
 			int variant = ((uint8_t*)TmpWork)[0] >= 7 ? ((uint8_t*)TmpWork)[0] - 6 : 0;
 again:

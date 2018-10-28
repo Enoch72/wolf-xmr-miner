@@ -1,0 +1,2 @@
+﻿  main.c
+d:\miners\wolf-xmr-miner\main.c(1): fatal error C1083: Non è possibile aprire il file inclusione: 'stdafx.h': No such file or directory

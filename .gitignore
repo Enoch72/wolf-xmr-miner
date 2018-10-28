@@ -1,3 +1,6 @@
 *.o
 xmr.conf
 
+/Wolf_XMR_Miner/.vs/Mad_XMR_Miner/v15
+/Wolf_XMR_Miner/.vs/Wolf_XMR_Miner/v15/Browse.VC.db
+/Wolf_XMR_Miner/.vs/Wolf_XMR_Miner/v15/ipch

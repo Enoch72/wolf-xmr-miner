@@ -1,0 +1,20 @@
+﻿  cl : warning della riga di comando D9002 : l'opzione sconosciuta '/arch:SSE' verrà ignorata
+  cryptonight.c
+  aesb.c
+  c_blake256.c
+  c_groestl.c
+  c_jh.c
+  c_keccak.c
+  c_skein.c
+  hash.c
+  oaes_lib.c
+  gpu.c
+  log.c
+  main.c
+d:\miners\wolf-xmr-miner\main.c(1130): warning C4090: 'funzione': qualificatori 'const' differenti
+  minerutils.c
+  net.c
+  stdafx.cpp
+  Generazione del codice in corso...
+d:\miners\wolf-xmr-miner\main.c(2014): warning C4700: utilizzata variabile locale 'ADLThread' non inizializzata
+  Mad_XMR_Miner.vcxproj -> D:\Miners\wolf-xmr-miner\Wolf_XMR_Miner\x64\Release\Mad_XMR_Miner.exe
